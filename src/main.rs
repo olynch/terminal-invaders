@@ -2,7 +2,7 @@
 mod util;
 
 use crate::util::event::Config;
-use nalgebra::{DMatrix, DVector, Vector2};
+use nalgebra::{DMatrix, Vector2};
 use std::time::Duration;
 use std::{error::Error, io};
 use termion::{event::Key, input::MouseTerminal, raw::IntoRawMode, screen::AlternateScreen};
@@ -36,7 +36,6 @@ impl Map {
         .collect::<Vec<Vec<Square>>>();
         let h = lines.len();
         let w = lines[0].len();
-        eprintln!("w: {}, h: {}", w, h);
         Map {
             grid: DMatrix::from_iterator(w, h, lines.into_iter().flatten()).transpose(),
         }
