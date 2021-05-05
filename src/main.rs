@@ -1,11 +1,14 @@
 #[allow(dead_code)]
 mod util;
 
-use rand::seq::IteratorRandom;
-use std::iter;
-use std::cmp::max;
 use crate::util::event::Config;
 use nalgebra::{DMatrix, Vector2};
+use rand::seq::IteratorRandom;
+use std::cmp::max;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::iter;
+use std::ops::Index;
 use std::time::Duration;
 use std::{error::Error, io};
 use termion::{event::Key, input::MouseTerminal, raw::IntoRawMode, screen::AlternateScreen};
@@ -19,6 +22,8 @@ use util::event::{Event, Events};
 enum Square {
     Empty,
     Wall,
+    SpawnPoint,
+    Destination,
 }
 
 impl Square {
@@ -26,12 +31,16 @@ impl Square {
         match self {
             Square::Empty => ' ',
             Square::Wall => '#',
+            Square::SpawnPoint => '^',
+            Square::Destination => '$',
         }
     }
     fn fr_char(c: char) -> Self {
         match c {
             ' ' => Square::Empty,
             '#' => Square::Wall,
+            '^' => Square::SpawnPoint,
+            '$' => Square::Destination,
             _ => panic!(),
         }
     }
@@ -41,46 +50,69 @@ struct Map {
     grid: DMatrix<Square>,
 }
 
+const NEIGHBOR4: [Vector2<i32>; 4] = [
+    Vector2::new(0, 1),
+    Vector2::new(1, 0),
+    Vector2::new(-1, 0),
+    Vector2::new(0, -1),
+];
+
+const NEIGHBOR8: [Vector2<i32>; 8] = [
+    Vector2::new(0, 1),
+    Vector2::new(1, 0),
+    Vector2::new(0, -1),
+    Vector2::new(-1, 0),
+    Vector2::new(1, 1),
+    Vector2::new(1, -1),
+    Vector2::new(-1, -1),
+    Vector2::new(-1, -1),
+];
+
 impl Map {
     fn new(desc: &str) -> Self {
-        let lines = desc.split('\n')
-                        .filter(|l| l.len() > 0)
-                        .map(|l| l.chars().map(Square::fr_char));
-        let (w, h) = lines.clone().fold((0,0), |(w,h), l| (max(w, l.count()), h+1));
-        let lines = lines.map(|l| l.clone().chain(iter::repeat(Square::Empty).take(w - l.count())));
+        let lines = desc
+            .split('\n')
+            .filter(|l| l.len() > 0)
+            .map(|l| l.chars().map(Square::fr_char));
+        let (w, h) = lines
+            .clone()
+            .fold((0, 0), |(w, h), l| (max(w, l.count()), h + 1));
+        let lines = lines.map(|l| {
+            l.clone()
+                .chain(iter::repeat(Square::Empty).take(w - l.count()))
+        });
         Map {
             grid: DMatrix::from_iterator(w, h, lines.flatten()).transpose(),
         }
     }
-    fn in_bounds(&self, s : Vector2<i32>) -> bool {
-        s.x > 0 && s.y > 0 && s.x < self.grid.ncols() as i32 && s.y < self.grid.nrows() as i32
+    fn in_bounds(&self, s: Vector2<i32>) -> bool {
+        s.x >= 0 && s.y >= 0 && s.x < self.grid.ncols() as i32 && s.y < self.grid.nrows() as i32
     }
-    fn neighbors_offsets(&self, s : Vector2<usize>, offsets : Vec<Vector2<i32>>) -> Vec<Vector2<usize>> {
-        let s = s.map (|x| x as i32);
-        offsets.iter().map(|t| s + t)
-                      .filter(|t| self.in_bounds(*t))
-                      .map(|t| t.map(|x| x as usize))
-                      .collect()
+    fn neighbors_offsets<'a>(
+        &'a self,
+        s: Vector2<usize>,
+        offsets: &'a [Vector2<i32>],
+    ) -> impl Iterator<Item = Vector2<usize>> + 'a {
+        let s = s.map(|x| x as i32);
+        offsets
+            .iter()
+            .map(move |t| s + t)
+            .filter(move |t| self.in_bounds(*t))
+            .map(|t| t.map(|x| x as usize))
     }
-    fn neighbors_4(&self, s : Vector2<usize>) -> Vec<Vector2<usize>>  {
-        self.neighbors_offsets(s, vec![
-            Vector2::new(0, 1),
-            Vector2::new(1, 0),
-            Vector2::new(0, -1),
-            Vector2::new(-1, 0),
-        ])
+    fn neighbors_4(&self, s: Vector2<usize>) -> impl Iterator<Item = Vector2<usize>> + '_ {
+        self.neighbors_offsets(s, &NEIGHBOR4)
     }
-    fn neighbors_8(&self, s : Vector2<usize>) -> Vec<Vector2<usize>>  {
-        self.neighbors_offsets(s, vec![
-            Vector2::new(0, 1),
-            Vector2::new(1, 0),
-            Vector2::new(0, -1),
-            Vector2::new(-1, 0),
-            Vector2::new(1, 1),
-            Vector2::new(1, -1),
-            Vector2::new(-1, -1),
-            Vector2::new(-1, -1),
-        ])
+    fn neighbors_8(&self, s: Vector2<usize>) -> impl Iterator<Item = Vector2<usize>> + '_ {
+        self.neighbors_offsets(s, &NEIGHBOR8)
+    }
+}
+
+impl Index<Vector2<usize>> for Map {
+    type Output = Square;
+
+    fn index<'a>(&'a self, i: Vector2<usize>) -> &'a Square {
+        &self.grid.index((i.y, i.x))
     }
 }
 
@@ -118,10 +150,29 @@ impl Widget for &GameState {
     }
 }
 
-fn pf_random(m : &Map, s : Vector2<usize>) -> Vector2<usize> {
+fn pf_random(m: &Map, s: Vector2<usize>) -> Vector2<usize> {
     let mut rng = rand::thread_rng();
-    *m.neighbors_4(s).iter().filter(|t| m.grid.index((t.x, t.y)) == &Square::Empty)
-                            .choose(&mut rng).unwrap_or(&s)
+    m.neighbors_4(s)
+        .filter(|t| m[*t] == Square::Empty)
+        .choose(&mut rng)
+        .unwrap_or(s)
+}
+
+fn pf_search(m: &Map, s: Vector2<usize>) -> () {
+    let mut visited = HashSet::new();
+    let mut parents: HashMap<Vector2<usize>, Option<Vector2<usize>>> = HashMap::new();
+    let mut q = Vec::new();
+    let mut cur = s;
+    let mut parent: Option<Vector2<usize>> = None;
+    while m[cur] != Square::Destination {
+        visited.insert(cur);
+        parents[&cur] = parent;
+        q.extend(
+            m.neighbors_4(cur)
+                .filter(|t| m[*t] == Square::Empty && !visited.contains(t)),
+        );
+        cur = q.pop().unwrap();
+    }
 }
 
 static MAP: &str = r#"
