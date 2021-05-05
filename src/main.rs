@@ -1,6 +1,9 @@
 #[allow(dead_code)]
 mod util;
 
+use rand::seq::IteratorRandom;
+use std::iter;
+use std::cmp::max;
 use crate::util::event::Config;
 use nalgebra::{DMatrix, Vector2};
 use std::time::Duration;
@@ -18,27 +21,66 @@ enum Square {
     Wall,
 }
 
+impl Square {
+    fn to_char(&self) -> char {
+        match self {
+            Square::Empty => ' ',
+            Square::Wall => '#',
+        }
+    }
+    fn fr_char(c: char) -> Self {
+        match c {
+            ' ' => Square::Empty,
+            '#' => Square::Wall,
+            _ => panic!(),
+        }
+    }
+}
+
 struct Map {
     grid: DMatrix<Square>,
 }
 
 impl Map {
     fn new(desc: &str) -> Self {
-        let lines = (desc.split('\n').map(|line| {
-            line.chars()
-                .map(|c| match c {
-                    ' ' => Square::Empty,
-                    '#' => Square::Wall,
-                    _ => panic!(),
-                })
-                .collect::<Vec<Square>>()
-        }))
-        .collect::<Vec<Vec<Square>>>();
-        let h = lines.len();
-        let w = lines[0].len();
+        let lines = desc.split('\n')
+                        .filter(|l| l.len() > 0)
+                        .map(|l| l.chars().map(Square::fr_char));
+        let (w, h) = lines.clone().fold((0,0), |(w,h), l| (max(w, l.count()), h+1));
+        let lines = lines.map(|l| l.clone().chain(iter::repeat(Square::Empty).take(w - l.count())));
         Map {
-            grid: DMatrix::from_iterator(w, h, lines.into_iter().flatten()).transpose(),
+            grid: DMatrix::from_iterator(w, h, lines.flatten()).transpose(),
         }
+    }
+    fn in_bounds(&self, s : Vector2<i32>) -> bool {
+        s.x > 0 && s.y > 0 && s.x < self.grid.ncols() as i32 && s.y < self.grid.nrows() as i32
+    }
+    fn neighbors_offsets(&self, s : Vector2<usize>, offsets : Vec<Vector2<i32>>) -> Vec<Vector2<usize>> {
+        let s = s.map (|x| x as i32);
+        offsets.iter().map(|t| s + t)
+                      .filter(|t| self.in_bounds(*t))
+                      .map(|t| t.map(|x| x as usize))
+                      .collect()
+    }
+    fn neighbors_4(&self, s : Vector2<usize>) -> Vec<Vector2<usize>>  {
+        self.neighbors_offsets(s, vec![
+            Vector2::new(0, 1),
+            Vector2::new(1, 0),
+            Vector2::new(0, -1),
+            Vector2::new(-1, 0),
+        ])
+    }
+    fn neighbors_8(&self, s : Vector2<usize>) -> Vec<Vector2<usize>>  {
+        self.neighbors_offsets(s, vec![
+            Vector2::new(0, 1),
+            Vector2::new(1, 0),
+            Vector2::new(0, -1),
+            Vector2::new(-1, 0),
+            Vector2::new(1, 1),
+            Vector2::new(1, -1),
+            Vector2::new(-1, -1),
+            Vector2::new(-1, -1),
+        ])
     }
 }
 
@@ -47,29 +89,21 @@ impl Widget for &Map {
         for (y, row) in self.grid.row_iter().enumerate() {
             for (x, sq) in row.iter().enumerate() {
                 let c = buf.get_mut(x as u16, y as u16);
-                c.set_symbol(match sq {
-                    Square::Empty => " ",
-                    Square::Wall => "#",
-                });
+                c.set_char(sq.to_char());
             }
         }
     }
 }
 
 struct GameState {
-    enemies: Vec<usize>,
+    enemies: Vec<Vector2<usize>>,
     map: Map,
-    path: Vec<Vector2<i32>>,
 }
 
 impl GameState {
     fn advance(&mut self) {
-        let n = self.path.len();
         for enemy in self.enemies.iter_mut() {
-            *enemy += 1;
-            if *enemy >= n {
-                *enemy = 0;
-            }
+            *enemy = pf_random(&self.map, *enemy);
         }
     }
 }
@@ -78,20 +112,27 @@ impl Widget for &GameState {
     fn render(self, area: Rect, buf: &mut Buffer) {
         self.map.render(area, buf);
         for enemy in self.enemies.iter() {
-            let pos = self.path[*enemy];
-            let c = buf.get_mut(pos[0] as u16, pos[1] as u16);
+            let c = buf.get_mut(enemy.x as u16, enemy.y as u16);
             c.set_symbol("*");
         }
     }
 }
 
-static MAP: &str = r#"### ###################
-### ###################
-### ###################
+fn pf_random(m : &Map, s : Vector2<usize>) -> Vector2<usize> {
+    let mut rng = rand::thread_rng();
+    *m.neighbors_4(s).iter().filter(|t| m.grid.index((t.x, t.y)) == &Square::Empty)
+                            .choose(&mut rng).unwrap_or(&s)
+}
+
+static MAP: &str = r#"
+### #############
+### #############
+### #############
 ###    ################
 ###### ################
+###### ##############
 ###### ################
-###### ################"#;
+"#;
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Terminal initialization
@@ -102,20 +143,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut game_state = GameState {
-        enemies: vec![0, 5],
+        enemies: vec![Vector2::new(3, 0), Vector2::new(3, 2)],
         map: Map::new(MAP),
-        path: vec![
-            Vector2::new(3, 0),
-            Vector2::new(3, 1),
-            Vector2::new(3, 2),
-            Vector2::new(3, 3),
-            Vector2::new(4, 3),
-            Vector2::new(5, 3),
-            Vector2::new(6, 3),
-            Vector2::new(6, 4),
-            Vector2::new(6, 5),
-            Vector2::new(6, 6),
-        ],
     };
 
     // Setup event handlers
