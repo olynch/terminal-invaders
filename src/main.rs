@@ -7,6 +7,7 @@ use rand::seq::IteratorRandom;
 use std::cmp::max;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::iter;
 use std::ops::Index;
 use std::time::Duration;
@@ -135,7 +136,7 @@ struct GameState {
 impl GameState {
     fn advance(&mut self) {
         for enemy in self.enemies.iter_mut() {
-            *enemy = pf_random(&self.map, *enemy);
+            *enemy = pf_search(&self.map, *enemy);
         }
     }
 }
@@ -158,31 +159,50 @@ fn pf_random(m: &Map, s: Vector2<usize>) -> Vector2<usize> {
         .unwrap_or(s)
 }
 
-fn pf_search(m: &Map, s: Vector2<usize>) -> () {
-    let mut visited = HashSet::new();
-    let mut parents: HashMap<Vector2<usize>, Option<Vector2<usize>>> = HashMap::new();
-    let mut q = Vec::new();
+fn first_move(
+    parents: &HashMap<Vector2<usize>, Option<Vector2<usize>>>,
+    end: Vector2<usize>,
+) -> Vector2<usize> {
+    let mut cur = end;
+    let mut prev = end;
+    while let Some(&Some(parent)) = parents.get(&cur) {
+        prev = cur;
+        cur = parent;
+    }
+    prev
+}
+
+fn pf_search(m: &Map, s: Vector2<usize>) -> Vector2<usize> {
+    let mut parents = HashMap::new();
+    let mut q = VecDeque::new();
     let mut cur = s;
     let mut parent: Option<Vector2<usize>> = None;
     while m[cur] != Square::Destination {
-        visited.insert(cur);
-        parents[&cur] = parent;
+        parents.insert(cur, parent);
         q.extend(
             m.neighbors_4(cur)
-                .filter(|t| m[*t] == Square::Empty && !visited.contains(t)),
+                .filter(|t| {
+                    (m[*t] == Square::Empty || m[*t] == Square::Destination)
+                        && !parents.contains_key(t)
+                })
+                .map(|t| (t, Some(cur))),
         );
-        cur = q.pop().unwrap();
+        let next = q.pop_front().unwrap();
+        cur = next.0;
+        parent = next.1;
     }
+    parents.insert(cur, parent);
+    first_move(&parents, cur)
 }
 
 static MAP: &str = r#"
 ### #############
 ### #############
 ### #############
-###    ################
-###### ################
-###### ##############
-###### ################
+###         ###########
+###### #### ###########
+###### #### #########
+######$####$###########
 "#;
 
 fn main() -> Result<(), Box<dyn Error>> {
